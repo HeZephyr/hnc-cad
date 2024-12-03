@@ -11,49 +11,82 @@ CUBOID_RANGE = 1
 
 
 def quantize(data, n_bits=8, min_range=-1.0, max_range=1.0):
-    """Convert vertices in [-1., 1.] to discrete values in [0, n_bits**2 - 1]."""
+    """将[-1., 1.]范围内的顶点数据转换为[0, n_bits**2 - 1]范围内的离散值。"""
+    # 计算量化范围，n_bits决定了离散值的个数
     range_quantize = 2**n_bits - 1
+
+    # 将数据线性映射到[0, range_quantize]范围内
     data_quantize = (data - min_range) * range_quantize / (max_range - min_range)
-    data_quantize = np.clip(data_quantize, a_min=0, a_max=range_quantize) # clip values
+    
+    # 使用 np.clip 将数据限制在[0, range_quantize]范围内，防止超出范围
+    data_quantize = np.clip(data_quantize, a_min=0, a_max=range_quantize)
+    
+    # 将数据类型转换为整数类型（int32）
     return data_quantize.astype('int32')
 
 
 def find_files(folder, extension):
+    """在指定文件夹中查找具有特定扩展名的文件，并按字母顺序返回路径列表。"""
     return sorted([Path(os.path.join(folder, f)) for f in os.listdir(folder) if f.endswith(extension)])
 
 
 def find_files_path(folder, extension):
+    """在指定文件夹中查找具有特定扩展名的文件，并返回文件路径的字符串列表。"""
     return sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(extension)])
 
 
 def get_loop_bbox(loop):
-    bbox = []
+    """计算草图中一个环形（loop）的边界框（bounding box）。"""
+    bbox = []  # 用于存储所有曲线的边界框信息
     for curve in loop:
+        # 获取每个曲线的边界框
         bbox.append(curve.bbox)
+    
+    # 将所有曲线的边界框合并成一个numpy数组
     bbox_np = np.vstack(bbox)
-    bbox_tight = [np.min(bbox_np[:,0]), np.max(bbox_np[:,1]), np.min(bbox_np[:,2]), np.max(bbox_np[:,3])]
-    return np.asarray(bbox_tight) 
+    
+    # 计算边界框的最小值和最大值，得到整个环形的紧密边界框（tight bounding box）
+    bbox_tight = [np.min(bbox_np[:, 0]), np.max(bbox_np[:, 1]), np.min(bbox_np[:, 2]), np.max(bbox_np[:, 3])]
+    
+    return np.asarray(bbox_tight)  # 返回边界框
 
 
 def get_face_bbox(face):
-    bbox = []
+    """计算草图中一个面（face）的边界框，通过计算所有环形（loop）的边界框。"""
+    bbox = []  # 用于存储面中所有环形的边界框
     for loop in face:
+        # 对于每个环形，计算其边界框
         bbox.append(get_loop_bbox(loop))
+    
+    # 将所有环形的边界框合并成一个numpy数组
     bbox_np = np.vstack(bbox)
-    bbox_tight = [np.min(bbox_np[:,0]), np.max(bbox_np[:,1]), np.min(bbox_np[:,2]), np.max(bbox_np[:,3])]
-    return np.asarray(bbox_tight) 
+    
+    # 计算整个面的紧密边界框（tight bounding box）
+    bbox_tight = [np.min(bbox_np[:, 0]), np.max(bbox_np[:, 1]), np.min(bbox_np[:, 2]), np.max(bbox_np[:, 3])]
+    
+    return np.asarray(bbox_tight)  # 返回面（face）的边界框
 
 
 def sort_faces(sketch):
-    bbox_list = []
+    """根据边界框的位置对草图中的面（faces）进行排序。"""
+    bbox_list = []  # 用于存储所有面的边界框
     for face in sketch:
+        # 对每个面计算其边界框
         bbox_list.append(get_face_bbox(face))
+    
+    # 将所有面边界框的最小值（X轴最小值和Y轴最小值）组成一个新的numpy数组
     bbox_list = np.vstack(bbox_list)
-    min_values = bbox_list[:, [0,2]]
-    # Sort by X min, then by Y min (increasing)
+    
+    # 提取每个边界框的最小X值和最小Y值
+    min_values = bbox_list[:, [0, 2]]
+    
+    # 使用 np.lexsort 对面进行排序，先按X最小值排序，如果X最小值相同，再按Y最小值排序（升序）
     ind = np.lexsort(np.transpose(min_values)[::-1])
+    
+    # 根据排序的索引对草图中的面进行重新排序
     sorted_sketch = [sketch[x] for x in ind]
-    return sorted_sketch
+    
+    return sorted_sketch  # 返回排序后的草图
 
 
 def sort_loops(face):
@@ -363,23 +396,31 @@ def convert_loop(sketch, bit, cad_uid, sketch_uid):
 
 def process_solid(data):
     """
-    Compute the 3D bbox of extruded solids (normalized 3D space)
+    计算拉伸固体的 3D 边界框（归一化到 3D 空间）
     """
-    project_folder, bit = data
+    project_folder, bit = data  # 获取当前项目的文件夹路径和位深度
+    # 找到当前文件夹中所有的 'extrude.stl' 和 '.obj' 文件
     extrude_files = find_files(project_folder, 'extrude.stl')
     obj_files = find_files(project_folder, '.obj')
-    if len(obj_files) == 0 or len(extrude_files)==0 or len(obj_files)!=len(extrude_files):
+    
+    # 如果没有找到相应的文件，或者文件数量不匹配，返回空列表
+    if len(obj_files) == 0 or len(extrude_files) == 0 or len(obj_files) != len(extrude_files):
         return []
 
-    cuboids = []
+    cuboids = []  # 用于存储所有计算出的 3D 边界框
+
+    # 遍历每一对 'extrude.stl' 文件和 '.obj' 文件
     for ext_file, obj_file in zip(extrude_files, obj_files):
-        # Load cuboid mesh
+        # 读取 extrude.stl 文件的网格数据
         mesh = meshio.read(str(ext_file))
-        vertex = mesh.points
-        x_min, x_max = np.min(vertex[:,0]), np.max(vertex[:,0])
-        y_min, y_max = np.min(vertex[:,1]), np.max(vertex[:,1])
-        z_min, z_max = np.min(vertex[:,2]), np.max(vertex[:,2])
+        vertex = mesh.points  # 获取网格的顶点坐标
+        
+        # 计算 X, Y, Z 轴的最小值和最大值，得到 3D 边界框
+        x_min, x_max = np.min(vertex[:, 0]), np.max(vertex[:, 0])
+        y_min, y_max = np.min(vertex[:, 1]), np.max(vertex[:, 1])
+        z_min, z_max = np.min(vertex[:, 2]), np.max(vertex[:, 2])
     
+        # 对边界框的每个坐标进行量化处理，确保它们在指定的范围内，并且符合位深度限制
         x_min = quantize(x_min, n_bits=bit, min_range=-CUBOID_RANGE, max_range=+CUBOID_RANGE)
         x_max = quantize(x_max, n_bits=bit, min_range=-CUBOID_RANGE, max_range=+CUBOID_RANGE)
         y_min = quantize(y_min, n_bits=bit, min_range=-CUBOID_RANGE, max_range=+CUBOID_RANGE)
@@ -387,26 +428,29 @@ def process_solid(data):
         z_min = quantize(z_min, n_bits=bit, min_range=-CUBOID_RANGE, max_range=+CUBOID_RANGE)
         z_max = quantize(z_max, n_bits=bit, min_range=-CUBOID_RANGE, max_range=+CUBOID_RANGE)
 
-        # Read in the obj file 
+        # 读取 .obj 文件
         parser = OBJParser(Path(obj_file)) 
-        _, _, meta_info = parser.parse_file(1.0)  
+        _, _, meta_info = parser.parse_file(1.0)  # 解析 .obj 文件获取元数据
     
-        # Set operation 
+        # 获取对象的布尔操作类型
         set_op = meta_info['set_op']
         if set_op == 'JoinFeatureOperation' or set_op == 'NewBodyFeatureOperation':
-            extrude_op = 0 #'add'
+            extrude_op = 0  # 'add' 操作
         elif set_op == 'CutFeatureOperation':
-            extrude_op = 1 #'cut'
+            extrude_op = 1  # 'cut' 操作
         elif set_op == 'IntersectFeatureOperation':
-            extrude_op = 2 #'intersect'
+            extrude_op = 2  # 'intersect' 操作
 
+        # 将计算得到的边界框信息和操作类型存入 cuboids 列表
         cuboids.append([extrude_op, x_min, x_max, y_min, y_max, z_min, z_max])
+    
+    # 将所有的 cuboid 信息转化为 numpy 数组，便于后续操作
     cuboids = np.vstack(cuboids)    
 
-    data = {'name': str(obj_file.parent)[-13:],
-            'solid':  cuboids}
+    # 创建一个包含数据名称和边界框信息的字典
+    data = {'name': str(obj_file.parent)[-13:], 'solid': cuboids}
 
-    return [data]
+    return [data]  # 返回包含数据字典的列表
 
 
 def process_profile(data):
